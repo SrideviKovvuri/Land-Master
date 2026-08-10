@@ -71,7 +71,13 @@ export async function fetchFloodAttributes({ lat, lng }) {
     data = await response.json();
   } catch (fetchError) {
     // CORS or network fallback via JSONP against the same ArcGIS endpoint.
-    data = await jsonp(url);
+    try {
+      data = await jsonp(url);
+    } catch (jsonpError) {
+      throw new Error(
+        `fetch() failed: ${fetchError.message}; JSONP fallback also failed: ${jsonpError.message}`
+      );
+    }
   }
 
   const feature = data?.features?.[0];
@@ -112,7 +118,16 @@ export async function fetchFloodPolygon({ lat, lng }) {
       f: 'json',
     });
     const jsonUrl = `${FEMA_NFHL_LAYER28_URL}?${jsonParams.toString()}`;
-    const data = await jsonp(jsonUrl);
+
+    let data;
+    try {
+      data = await jsonp(jsonUrl);
+    } catch (jsonpError) {
+      throw new Error(
+        `fetch() failed: ${fetchError.message}; JSONP fallback also failed: ${jsonpError.message}`
+      );
+    }
+
     const feature = data?.features?.[0];
     if (!feature) return null;
 
