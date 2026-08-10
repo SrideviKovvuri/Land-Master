@@ -7,8 +7,8 @@ const LEGEND_ITEMS = [
 
 export default function MapLegend() {
   return (
-    <div className="map-legend" aria-label="Flood zone legend">
-      <p className="map-legend__title">Flood zones</p>
+    <details className="map-legend" aria-label="Flood zone legend" open>
+      <summary className="map-legend__title">Flood zones</summary>
       <ul className="map-legend__list">
         {LEGEND_ITEMS.map(({ color, label }) => (
           <li className="map-legend__item" key={label}>
@@ -17,6 +17,6 @@ export default function MapLegend() {
           </li>
         ))}
       </ul>
-    </div>
+    </details>
   );
 }
