@@ -1,15 +1,28 @@
 // FEMA National Flood Hazard Layer (NFHL) — Layer 28: Flood Hazard Zones.
 // All requests are GET. Point geometry is always { x: longitude, y: latitude }.
 //
-// FEMA's ArcGIS endpoint generally supports CORS for GET requests, so the
-// primary path uses fetch(). As a resilience fallback (in case a particular
-// deployment of the service ever lacks CORS headers), the same reusable
-// JSONP helper used for the Census Geocoder can be used against ArcGIS's
-// built-in `callback` parameter — this keeps the app proxy-free either way.
+// Primary source: hazards.fema.gov's own ArcGIS Server (fetch, then a
+// JSONP fallback via the same reusable helper used for the Census
+// Geocoder, using ArcGIS's built-in `callback` mechanism).
+//
+// Fallback source: FEMA also republishes the NFHL data as hosted feature
+// services on ArcGIS Online (services*.arcgis.com). That's cloud SaaS
+// infrastructure that supports CORS by default, unlike hazards.fema.gov's
+// on-prem server — so when the primary source is unreachable from the
+// browser, querying these mirrors directly via fetch() still keeps the
+// app entirely proxy-free.
 import { jsonp } from './jsonp';
 
 const FEMA_NFHL_LAYER28_URL =
   'https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query';
+
+// FEMA-published NFHL mirrors hosted on ArcGIS Online. Tried in order if
+// hazards.fema.gov is unreachable from the browser.
+const ARCGIS_ONLINE_FEATURE_SERVERS = [
+  'https://services5.arcgis.com/ul2HkPnjmlM1iEE4/ArcGIS/rest/services/FEMA_Flood_Hazard/FeatureServer',
+  'https://services.arcgis.com/2gdL2gxYNFY2TOUb/arcgis/rest/services/FEMA_National_Flood_Hazard_Layer/FeatureServer',
+];
+const FLOOD_ZONE_LAYER_NAME_PATTERN = /flood.*hazard.*zone/i;
 
 const FLOOD_ATTRIBUTE_FIELDS = [
   'FLD_ZONE',
@@ -48,6 +61,83 @@ function esriRingsToGeoJsonGeometry(rings) {
 }
 
 /**
+ * Query hazards.fema.gov for raw Esri JSON, trying fetch() first and
+ * falling back to JSONP. Throws (with both failure reasons) if both fail.
+ */
+async function queryHazardsFema(extraParams) {
+  const params = new URLSearchParams({ ...extraParams, f: 'json' });
+  const url = `${FEMA_NFHL_LAYER28_URL}?${params.toString()}`;
+
+  try {
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) {
+      throw new Error(`request failed with status ${response.status}`);
+    }
+    return await response.json();
+  } catch (fetchError) {
+    try {
+      return await jsonp(url);
+    } catch (jsonpError) {
+      throw new Error(
+        `hazards.fema.gov fetch() failed: ${fetchError.message}; JSONP fallback also failed: ${jsonpError.message}`
+      );
+    }
+  }
+}
+
+const floodZoneLayerIdCache = new Map();
+
+/** Finds (and caches) the "Flood Hazard Zones" layer ID within an ArcGIS Online FeatureServer. */
+async function discoverFloodZoneLayerId(featureServerUrl) {
+  if (floodZoneLayerIdCache.has(featureServerUrl)) {
+    return floodZoneLayerIdCache.get(featureServerUrl);
+  }
+  const response = await fetch(`${featureServerUrl}?f=json`);
+  if (!response.ok) {
+    throw new Error(`layer discovery failed with status ${response.status}`);
+  }
+  const meta = await response.json();
+  const layers = meta.layers ?? [];
+  const match = layers.find((layer) => FLOOD_ZONE_LAYER_NAME_PATTERN.test(layer.name ?? ''));
+  const layerId = match ? match.id : layers[0]?.id;
+  if (layerId == null) {
+    throw new Error('no layers found in FeatureServer');
+  }
+  floodZoneLayerIdCache.set(featureServerUrl, layerId);
+  return layerId;
+}
+
+/**
+ * Queries the FEMA-published ArcGIS Online NFHL mirrors in order via
+ * fetch() (CORS-friendly cloud infrastructure). Throws if all fail.
+ */
+async function queryArcgisOnline(lat, lng, { returnGeometry, format }) {
+  let lastError;
+  for (const featureServerUrl of ARCGIS_ONLINE_FEATURE_SERVERS) {
+    try {
+      const layerId = await discoverFloodZoneLayerId(featureServerUrl);
+      const params = new URLSearchParams({
+        geometry: buildGeometryParam(lat, lng),
+        geometryType: 'esriGeometryPoint',
+        inSR: '4326',
+        spatialRel: 'esriSpatialRelIntersects',
+        outFields: '*',
+        returnGeometry: String(returnGeometry),
+        f: format,
+      });
+      const response = await fetch(`${featureServerUrl}/${layerId}/query?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`status ${response.status}`);
+      }
+      return await response.json();
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError ?? new Error('no ArcGIS Online NFHL mirrors configured');
+}
+
+/**
  * Query FEMA NFHL Layer 28 for flood-zone attributes at a point.
  * returnGeometry=false — attributes only.
  *
@@ -55,27 +145,15 @@ function esriRingsToGeoJsonGeometry(rings) {
  * @returns {Promise<{ hasFeature: boolean, attributes: object|null }>}
  */
 export async function fetchFloodAttributes({ lat, lng }) {
-  const params = new URLSearchParams({
-    ...buildBaseParams(lat, lng),
-    returnGeometry: 'false',
-    f: 'json',
-  });
-  const url = `${FEMA_NFHL_LAYER28_URL}?${params.toString()}`;
-
   let data;
   try {
-    const response = await fetch(url, { method: 'GET' });
-    if (!response.ok) {
-      throw new Error(`FEMA attribute request failed with status ${response.status}`);
-    }
-    data = await response.json();
-  } catch (fetchError) {
-    // CORS or network fallback via JSONP against the same ArcGIS endpoint.
+    data = await queryHazardsFema({ ...buildBaseParams(lat, lng), returnGeometry: 'false' });
+  } catch (primaryError) {
     try {
-      data = await jsonp(url);
-    } catch (jsonpError) {
+      data = await queryArcgisOnline(lat, lng, { returnGeometry: false, format: 'json' });
+    } catch (fallbackError) {
       throw new Error(
-        `fetch() failed: ${fetchError.message}; JSONP fallback also failed: ${jsonpError.message}`
+        `Primary FEMA source failed: ${primaryError.message}; ArcGIS Online fallback also failed: ${fallbackError.message}`
       );
     }
   }
@@ -95,50 +173,41 @@ export async function fetchFloodAttributes({ lat, lng }) {
  * @returns {Promise<object|null>} A GeoJSON Feature, or null if no flood polygon covers the point.
  */
 export async function fetchFloodPolygon({ lat, lng }) {
-  const params = new URLSearchParams({
-    ...buildBaseParams(lat, lng),
-    returnGeometry: 'true',
-    f: 'geojson',
-  });
-  const url = `${FEMA_NFHL_LAYER28_URL}?${params.toString()}`;
-
+  // hazards.fema.gov: try native GeoJSON via fetch first.
   try {
-    const response = await fetch(url, { method: 'GET' });
+    const params = new URLSearchParams({
+      ...buildBaseParams(lat, lng),
+      returnGeometry: 'true',
+      f: 'geojson',
+    });
+    const response = await fetch(`${FEMA_NFHL_LAYER28_URL}?${params.toString()}`, { method: 'GET' });
     if (!response.ok) {
-      throw new Error(`FEMA geometry request failed with status ${response.status}`);
+      throw new Error(`request failed with status ${response.status}`);
     }
     const geojson = await response.json();
     return geojson?.features?.[0] ?? null;
   } catch (fetchError) {
-    // Fallback: JSONP only supports f=json (Esri JSON), so request that
-    // format via the callback mechanism and convert rings to GeoJSON.
-    const jsonParams = new URLSearchParams({
-      ...buildBaseParams(lat, lng),
-      returnGeometry: 'true',
-      f: 'json',
-    });
-    const jsonUrl = `${FEMA_NFHL_LAYER28_URL}?${jsonParams.toString()}`;
-
-    let data;
+    // JSONP only supports Esri JSON (f=json), so request that format via
+    // the callback mechanism and convert rings to GeoJSON ourselves.
     try {
-      data = await jsonp(jsonUrl);
+      const data = await queryHazardsFema({ ...buildBaseParams(lat, lng), returnGeometry: 'true' });
+      const feature = data?.features?.[0];
+      if (!feature) return null;
+      const geometry = esriRingsToGeoJsonGeometry(feature.geometry?.rings);
+      if (!geometry) return null;
+      return { type: 'Feature', geometry, properties: feature.attributes ?? {} };
     } catch (jsonpError) {
-      throw new Error(
-        `fetch() failed: ${fetchError.message}; JSONP fallback also failed: ${jsonpError.message}`
-      );
+      // Both hazards.fema.gov paths failed — fall back to the ArcGIS
+      // Online mirrors, which return proper GeoJSON directly via fetch.
+      try {
+        const geojson = await queryArcgisOnline(lat, lng, { returnGeometry: true, format: 'geojson' });
+        return geojson?.features?.[0] ?? null;
+      } catch (fallbackError) {
+        throw new Error(
+          `Primary FEMA source failed: ${fetchError.message} / ${jsonpError.message}; ArcGIS Online fallback also failed: ${fallbackError.message}`
+        );
+      }
     }
-
-    const feature = data?.features?.[0];
-    if (!feature) return null;
-
-    const geometry = esriRingsToGeoJsonGeometry(feature.geometry?.rings);
-    if (!geometry) return null;
-
-    return {
-      type: 'Feature',
-      geometry,
-      properties: feature.attributes ?? {},
-    };
   }
 }
 
