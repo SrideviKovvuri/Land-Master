@@ -14,7 +14,7 @@
 import { jsonp } from './jsonp';
 
 const FEMA_NFHL_LAYER28_URL =
-  'https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query';
+  'https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query';
 
 // FEMA-published NFHL mirrors hosted on ArcGIS Online. Tried in order if
 // hazards.fema.gov is unreachable from the browser.
@@ -86,25 +86,39 @@ async function queryHazardsFema(extraParams) {
 }
 
 const floodZoneLayerIdCache = new Map();
+const floodZoneLayerIdPending = new Map();
 
 /** Finds (and caches) the "Flood Hazard Zones" layer ID within an ArcGIS Online FeatureServer. */
 async function discoverFloodZoneLayerId(featureServerUrl) {
   if (floodZoneLayerIdCache.has(featureServerUrl)) {
     return floodZoneLayerIdCache.get(featureServerUrl);
   }
-  const response = await fetch(`${featureServerUrl}?f=json`);
-  if (!response.ok) {
-    throw new Error(`layer discovery failed with status ${response.status}`);
+  if (floodZoneLayerIdPending.has(featureServerUrl)) {
+    return floodZoneLayerIdPending.get(featureServerUrl);
   }
-  const meta = await response.json();
-  const layers = meta.layers ?? [];
-  const match = layers.find((layer) => FLOOD_ZONE_LAYER_NAME_PATTERN.test(layer.name ?? ''));
-  const layerId = match ? match.id : layers[0]?.id;
-  if (layerId == null) {
-    throw new Error('no layers found in FeatureServer');
+
+  const discovery = (async () => {
+    const response = await fetch(`${featureServerUrl}?f=json`);
+    if (!response.ok) {
+      throw new Error(`layer discovery failed with status ${response.status}`);
+    }
+    const meta = await response.json();
+    const layers = meta.layers ?? [];
+    const match = layers.find((layer) => FLOOD_ZONE_LAYER_NAME_PATTERN.test(layer.name ?? ''));
+    const layerId = match ? match.id : layers[0]?.id;
+    if (layerId == null) {
+      throw new Error('no layers found in FeatureServer');
+    }
+    floodZoneLayerIdCache.set(featureServerUrl, layerId);
+    return layerId;
+  })();
+
+  floodZoneLayerIdPending.set(featureServerUrl, discovery);
+  try {
+    return await discovery;
+  } finally {
+    floodZoneLayerIdPending.delete(featureServerUrl);
   }
-  floodZoneLayerIdCache.set(featureServerUrl, layerId);
-  return layerId;
 }
 
 /**
@@ -231,7 +245,7 @@ export function getFloodZoneLabel(zone) {
   return `Zone ${zone}`;
 }
 
-const FEMA_EXPORT_URL = 'https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/export';
+const FEMA_EXPORT_URL = 'https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/export';
 const WEB_MERCATOR_RADIUS = 6378137;
 const TILE_SIZE = 256;
 
