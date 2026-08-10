@@ -6,6 +6,25 @@ const DEFAULT_CENTER = { lat: 39.8283, lng: -98.5795 }; // Continental US centro
 const DEFAULT_ZOOM = 4;
 const SELECTED_ZOOM = 16;
 
+/**
+ * Recenters the map once when a new property is selected, using
+ * imperative panTo()/setZoom() calls instead of controlled center/zoom
+ * props. Controlled props would re-run on every render (e.g. every
+ * Census/TIGERweb/FEMA status change) and fight the user's own
+ * drag/pan, making the map feel undraggable.
+ */
+function RecenterOnSelection({ lat, lng }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map || lat == null || lng == null) return;
+    map.panTo({ lat, lng });
+    map.setZoom(SELECTED_ZOOM);
+  }, [map, lat, lng]);
+
+  return null;
+}
+
 /** Renders the Census tract boundary via google.maps.Data with survey-style outline. */
 function TractLayer({ geojson, visible }) {
   const map = useMap();
@@ -133,23 +152,22 @@ export default function MapView({
   showFloodPolygonLayer,
   showFemaTiles,
 }) {
-  const center = markerPosition ?? DEFAULT_CENTER;
-  const zoom = markerPosition ? SELECTED_ZOOM : DEFAULT_ZOOM;
-
   return (
     <Map
       className="map-view"
       defaultCenter={DEFAULT_CENTER}
       defaultZoom={DEFAULT_ZOOM}
-      center={markerPosition ? center : undefined}
-      zoom={markerPosition ? zoom : undefined}
       gestureHandling="greedy"
+      draggable
       disableDefaultUI={false}
       mapTypeControl={false}
       streetViewControl={false}
       fullscreenControl={false}
       clickableIcons={false}
     >
+      {markerPosition && (
+        <RecenterOnSelection lat={markerPosition.lat} lng={markerPosition.lng} />
+      )}
       <FemaTileLayer visible={showFemaTiles} />
       <TractLayer geojson={tractGeoJson} visible={showTractLayer} />
       <FloodPolygonLayer geojson={floodGeoJson} visible={showFloodPolygonLayer} />
