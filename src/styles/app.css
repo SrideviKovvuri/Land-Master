@@ -191,6 +191,8 @@ input,
 
 /* ==========================================================================
    Layer controls + legend
+   Both are native <details>/<summary> disclosure widgets so they can be
+   collapsed independently — keeps them from crowding the map on mobile.
    ========================================================================== */
 .app-shell__layer-controls {
   position: absolute;
@@ -219,8 +221,24 @@ input,
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--color-text-muted);
-  margin: 0 0 8px;
+  margin: 0;
   padding: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.layer-controls[open] > .layer-controls__title,
+.map-legend[open] > .map-legend__title {
+  margin-bottom: 8px;
+}
+
+.layer-controls__title::-webkit-details-marker,
+.map-legend__title::-webkit-details-marker {
+  color: var(--color-topo-green);
+}
+
+.layer-controls__body {
+  margin-top: 6px;
 }
 
 .layer-controls__item {
@@ -282,13 +300,25 @@ input,
   padding: 16px 18px 20px;
 }
 
+.readout-panel--collapsed {
+  overflow-y: visible;
+  padding-bottom: 16px;
+}
+
 .readout-panel__header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
+  gap: 10px;
   border-bottom: 1px solid var(--color-line);
   padding-bottom: 8px;
   margin-bottom: 10px;
+}
+
+.readout-panel--collapsed .readout-panel__header {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0;
 }
 
 .readout-panel__title {
@@ -298,6 +328,24 @@ input,
   margin: 0;
   letter-spacing: 0.02em;
   color: var(--color-ink);
+}
+
+.readout-panel__toggle {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-topo-green-deep);
+  background: var(--color-paper);
+  border: 1px solid var(--color-line-strong);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.readout-panel__toggle:hover {
+  background: var(--color-ok-bg);
 }
 
 .readout-panel__empty {
@@ -495,6 +543,10 @@ input,
     padding: 12px 14px 18px;
   }
 
+  .readout-panel--collapsed {
+    max-height: none;
+  }
+
   .readout-panel::before {
     content: '';
     display: block;
@@ -503,6 +555,10 @@ input,
     margin: 0 auto 10px;
     border-radius: 2px;
     background: var(--color-line-strong);
+  }
+
+  .readout-panel--collapsed::before {
+    margin-bottom: 0;
   }
 
   .source-status-list {
